@@ -1,0 +1,63 @@
+name: 🛡️ PR Security Gate v2
+
+on:
+  pull_request:
+    branches: [ main, master ]
+    types: [ opened, synchronize, reopened ]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  supply-chain-check:
+    name: Critical Entry Point Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - name: Detect Malicious .pth Files
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+      with:
+        script: |
+          const owner = context.repo.owner;
+          const repo = context.repo.repo;
+          const pull_number = context.payload.pull_request.number;
+
+          const suspects = [];
+
+          for await (const page of github.paginate.iterator(github.rest.pulls.listFiles, {
+            owner,
+            repo,
+            pull_number,
+            per_page: 100,
+          })) {
+            for (const f of page.data) {
+              const status = (f.status || '').toLowerCase();
+              const newName = (f.filename || '').toLowerCase();
+
+              if (status === 'removed') {
+                continue; // ignore deletions
+              }
+
+              if (status === 'renamed') {
+                if (newName.endsWith('.pth')) {
+                  suspects.push(f.filename);
+                }
+                continue;
+              }
+
+              if (newName.endsWith('.pth')) {
+                suspects.push(f.filename);
+              }
+            }
+          }
+
+          if (suspects.length > 0) {
+            core.setFailed(
+              `SECURITY ALERT: .pth file(s) detected in PR diff:\n${suspects.join('\n')}\n` +
+              `REASON: .pth files allow arbitrary code execution at Python startup.\n` +
+              `If this is a legitimate test fixture, rename it to .pth.txt`
+            );
+          } else {
+            core.info('No suspicious entry points found.');
+          }
